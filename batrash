@@ -1,0 +1,416 @@
+#!/bin/bash
+#
+# batrash is a bash shell script for moving files and directories to a pre-existing trash can.
+
+	# this script relies on bash things
+[ $(readlink /proc/$$/exe) = "/bin/bash" ] || {
+	>&2 echo "batrash : this script really needs bash to work well."
+	return 1
+}
+	# this script is not tested as source
+[[ "$0" = "bash" || -z "${0%%*/bash}" ]] && {
+	>&2 echo "batrash : sourcing this script is not tested, and therefor unsafe."
+	return 2
+}
+
+getRealparent() {
+	# Echoes the realpath of the parent of the argument. All terminating '/' characters
+	# should have been removed from the argument before calling this function
+	# USAGE: $(getRealparent file|directory)
+	case "$1" in
+			# make the function complete, but checkAll() prevents this case
+		( "" )	# "/", "//" or ... with all terminating '/' stripped off
+			>&2 echo "Root \"/\" has no parent directory"
+			return 2
+			;;
+		( */* )
+			realpath -e "${1%/*}"
+			;;
+		( * )
+			realpath -e .
+			;;
+	esac || {
+		>&2 echo "Cannot get real path to parent of \"$1\""
+		return 1
+	}
+}
+
+getRealmntpt() {
+	# USAGE: $(getMntPt file|directory)
+	# NOTE : $(getRealmntpt $(getRealmntpt $1)) = $(getRealmntpt $1)
+		# is not specified to be canonicalized, so we let realpath do that
+	local mntpt=$(stat --format %m "$1") || {
+		>&2 echo "Cannot get mount point for \"$1\""
+		return 2
+	}
+	mntpt=$(realpath "$mntpt") || {
+		>&2 echo "Cannot get real path to mount point for \"$1\""
+		return 1
+	}
+		# we always need it ending with a (single) '/'; realpath removes that,
+		# just make sure it did and put it back there
+	echo "${mntpt%/}"/
+}
+
+canWritedir() {
+	# checks if a path either does not exist (therefor cane be created valid
+	# in a writable parent), or is a valid (traversable, writable) directory
+	# USAGE : canWritedir directory && echo Can write || echo Cannot write
+	if [ -e "$1" ]
+	then
+		[[ -d "$1" && -x "$1" && -w "$1" ]] ||
+			return 1
+	fi
+	return 0
+}
+
+urlencode() {
+	# url-encodes a string parameter to stdout
+    # USAGE: $(urlencode string)
+    # TODO for real url encoding for web purposes, this function might fail,
+    # because it escapes the '!' character, that has meaning in some urls.
+    local string="$1"
+    local len="${#string}"
+    for (( offs = 0; offs < len; offs++ )); do
+        local c="${string:offs:1}"
+        case "$c" in
+
+				# RFC 2396 : If the data for a URI component would conflict with
+				# the reserved purpose, then the conflicting data must be escaped
+				# before forming the URI.
+				#   reserved  = ";" | "/" | "?" | ":" | "@" | "&" | "=" | "+" | "$" | ","
+				# NOTE : As our purpose, file name encoding, does not know the kind
+				# of conflicts that internet URLs do, we just never escape them
+			( [\;/?:@\&=+\$,] )
+				printf "$c"
+				;;
+				# RFC 2396 : Data must be escaped if it does not have
+				#	a representation using an unreserved character
+				#	unreserved = alphanum | mark
+				#	mark = "-" | "_" | "." | "!" | "~" | "*" | "'" | "(" | ")"
+				# NOTE : exclude "!" from this list; it's meaning as history
+				#	command in bash tends to mesh things up
+            ( [0-9A-Za-z\)\(\'*~._-] )
+				printf "$c"
+				;;
+            ( * )
+					# "'$c" : if the leading character of arg is a single or
+					# double quote, the value is the ASCII value of the
+					# following character.
+				printf '%%%02X' "'$c"
+				;;
+        esac
+    done
+}
+
+#	urldecode() {
+#	    # USAGE : urldecode string
+#		# TODO : is string containing a backslash a problem?
+#	    local url_encoded="${1//+/ }"
+#	    printf '%b' "${url_encoded//%/\\x}"
+#	}
+
+findHometrash() {
+	# Sets the variable batrash_mem_hometrash to the path of the valid and existing
+	# trash can in the user's home directory, or returns error.
+	# USAGE: findHometrash && echo HOME trash can is valid || echo no valid HOME trash can
+	if [ -v batrash_mem_hometrash ]
+	then	# already located, or not found if batrash_mem_hometrash is empty string
+		[ -n "$batrash_mem_hometrash" ] &&
+			return 0 ||
+			return 1
+	fi
+	local hometrash
+		# If $XDG_DATA_HOME is not set or empty, it defaults to $HOME/.local/share
+	[ -n "$XDG_DATA_HOME" ] &&
+		hometrash="$XDG_DATA_HOME"/Trash ||
+		hometrash="$HOME/.local/share"/Trash
+	if [ -e "$hometrash" ]
+	then	# if home trash exists, it must be a directory and valid, else fail
+		if [[ -d "$hometrash" && -x "$hometrash" && -w "$hometrash" ]]
+		then	# valid trash can; if we cannot write to subdirs, report it and fail
+			{	canWritedir "$hometrash/files" &&
+				canWritedir "$hometrash/info"
+			} ||
+			{
+				>&2 echo "Can not write to directories files and/or info in trash can \"$hometrash\""
+				return 2
+			}
+			batrash_mem_hometrash="$hometrash"
+			return 0
+		else	# trash can exists, but not valid: report it and fail
+			>&2 echo -n "Invalid trash can \"$hometrash\" for \"$1\" : "
+			[ -d "$hometrash"] || >&2 echo "not a directory."
+			[ -x "$hometrash"] || >&2 echo "not traversable."
+			[ -w "$hometrash"] || >&2 echo "not writable."
+			return 3
+		fi
+	else	# home trash can doesn't exist; remember that 
+		batrash_mem_hometrash=
+			# no error message; spec says to create a hometrash, we won't:
+			# instead we look for a fallback trashcan at $topdir
+		# >&2 echo "local trashcan \"$hometrash\" is not a writable directory."
+		return 4
+	fi
+}
+
+findTrashcan() {
+	# Locates an appropriate and valid trash can for the argument, if any. The
+	# function returns false if no trash can is found, or if the argument is in
+	# a non-writable directory, and hence can't be moved to a trash can either.
+	# The result is stored in the variable batrash_findtrashcan; other
+	# batrash_ variables are set as well
+	# USAGE: findTrashcan file|directory
+	local realdir=$(getRealparent "$1") ||
+		return 10
+		# don't even try trashing if file can't be removed from parent directory
+	[[ -d "$realdir" && -x "$realdir" && -w "$realdir" ]] || {
+		>&2 echo "\"$1\" can not be removed from it's parent \"$realdir\": no write access to directory."
+		[ -d "$realdir" ] || >&2 echo "not a directory."
+		[ -x "$realdir" ] || >&2 echo "not traversable."
+		[ -w "$realdir" ] || >&2 echo "not writable."
+		return 9
+	}
+	batrash_realpath="$realdir/${1##*/}"
+		# check previous OK'ed result, based on parent directory
+	[ "$batrash_mem_realdir" = "$realdir" ] && {
+		batrash_findtrashcan="$batrash_mem_dirtrashcan"
+		return 0
+	}
+		# get mountpoint of batrash_realpath, not realdir; if realdir is e.g. a
+		# bind-mount point, results of some "stat -c %m" are not consistent
+		# NOT LOCAL, we use batrash_realpath and batrash_realmntpt in xxx.trashinfo
+	batrash_realmntpt=$(getRealmntpt "$batrash_realpath") ||
+		return 8
+		# NOTE: only if path has the prefix, omitting that prefix has an effect
+	if [ "$batrash_realpath" != "${batrash_realpath#$batrash_realhome/}" ]
+	then	# argument is sub home path, check mountpoint too
+			# lazy get mountpoint of $HOME
+		[ -v batrash_mem_homemntpt ] || batrash_mem_homemntpt=$(getRealmntpt "$HOME") || return 7
+		if [ "$batrash_mem_homemntpt" = "$batrash_realmntpt" ] && findHometrash
+		then	# use home trash can, and remember it for this parent directory
+			batrash_mem_realdir="$realdir"
+			batrash_mem_dirtrashcan="$batrash_mem_hometrash"
+			batrash_findtrashcan="$batrash_mem_hometrash"
+			return 0
+		fi
+	fi
+		# home trash not suited, previous OK'ed result may fit $batrash_realmntpt
+	if [ "$batrash_mem_mntpt" = "$batrash_realmntpt" ]
+	then	# use remembered mount point's trash can, and remember it for
+			# this parent directory too
+		batrash_mem_realdir="$realdir"
+		batrash_mem_dirtrashcan="$batrash_mem_mnttrashcan"
+		batrash_findtrashcan="$batrash_mem_mnttrashcan"
+		return 0
+	fi
+		# try general trash can $topdir/.Trash
+	local trashcan="$batrash_realmntpt".Trash
+	if [ -e "$trashcan" ]
+	then
+		if [[ -d "$trashcan" &&   -x "$trashcan" &&
+			  -w "$trashcan" && ! -L "$trashcan" &&
+			( -k "$trashcan" ||   -f "$trashcan/.stickybit" ) ]]
+		then	# valid trash can; if we cannot write to subdirs, don't try
+				# next alternative, but report it and fail
+			{   canWritedir "$trashcan/$batrash_uid/files" &&
+				canWritedir "$trashcan/$batrash_uid/info"
+			} ||
+			{
+				[[ ! -e "$trashcan/$batrash_uid/files" &&
+				   ! -e "$trashcan/$batrash_uid/info"  ]] &&
+				canWritedir "$trashcan/$batrash_uid"
+			} ||
+			{
+				>&2 echo "Can not write to directories \"files\" and/or \"info\" in trash can \"$trashcan/$batrash_uid\""
+				return 5
+			}
+				# remember for both mount point and parent directory
+			batrash_mem_realdir="$realdir"
+			batrash_mem_dirtrashcan="$trashcan/$batrash_uid"
+			batrash_mem_mntpt="$batrash_realmntpt"
+			batrash_mem_mnttrashcan="$trashcan/$batrash_uid"
+			batrash_findtrashcan="$trashcan/$batrash_uid" # no need to create until moveTotrashcan()
+			return 0
+		else	# trash can exists, but not valid: report it and fail
+			>&2 echo -n "Invalid trash can \"$trashcan\" for \"$1\" : "
+			[ -d "$trashcan" ] || >&2 echo "not a directory."
+			[ -x "$trashcan" ] || >&2 echo "not traversable."
+			[ -w "$trashcan" ] || >&2 echo "not writable."
+			[ -L "$trashcan" ] && >&2 echo "only a link."
+			[[ -k "$trashcan" || -f "$trashcan/.stickybit" ]] || >&2 echo "not sticky."
+			return 4
+		fi
+	fi
+		# try user-specific trash can $topdir/.Trash-uid
+		# note that requirements for a single-user trash can are less stringent :
+		# may be a symlink, need not be sticky
+	trashcan="$batrash_realmntpt".Trash-"$batrash_uid"
+	if [ -e "$trashcan" ]
+	then
+		if [[ -d "$trashcan" && -x "$trashcan" && -w "$trashcan" ]]
+		then	# valid trash can; if we cannot write to subdirs, report it and fail
+			{	canWritedir "$trashcan/files" &&
+				canWritedir "$trashcan/info"
+			} ||
+			{
+				>&2 echo "Can not write to directories files and/or info in trash can \"$trashcan\""
+				return 3
+			}
+				# remember for both mount point and parent directory
+			batrash_mem_realdir="$realdir"
+			batrash_mem_dirtrashcan="$trashcan"
+			batrash_mem_mntpt="$batrash_realmntpt"
+			batrash_mem_mnttrashcan="$trashcan"
+			batrash_findtrashcan="$trashcan"
+			return 0
+		else	# trash can exists, but not valid: report it and fail
+			>&2 echo -n "Invalid trash can \"$trashcan\" for \"$1\" : "
+			[ -d "$trashcan"] || >&2 echo "not a directory."
+			[ -x "$trashcan"] || >&2 echo "not traversable."
+			[ -w "$trashcan"] || >&2 echo "not writable."
+			return 2
+		fi
+	fi
+	return 1	# no trash can found
+}
+
+moveTotrashcan() {
+	# USAGE : moveTotrashcan file
+	findTrashcan "$1" ||
+		return 1
+	local trashcan="$batrash_findtrashcan"
+	local trashcanmeta="$trashcan/info"
+	local trashcandata="$trashcan/files"
+	mkdir -p "$trashcanmeta" "$trashcandata" || {
+			>&2 echo "Could not create trash can directories  \"$trashcandata\" and  \"$trashcanmeta\" for \"$1\""
+			return 2
+	}	
+		# value of the Path= key in .trashinfo, which is relative to the directory
+		# where the trash can is located. For the home trash can this is
+		# "~/.local/share" : don't bother trying to remove that as a prefix,
+		# other implementations don't, and the standard does allow absolute path
+		# for the home trash can. For all other trash cans, this is the mount point.
+	local pathval
+	[ "$trashcan" = "$batrash_mem_hometrash" ] && pathval="$batrash_realpath" || pathval="${batrash_realpath#$batrash_realmntpt}" # remember we terminate each realmntpt with '/'
+	pathval=$(urlencode "$pathval")
+	local basename="${batrash_realpath##*/}"
+		# make room for appending ".trashinfo"
+	local trashname=".trashinfo" # just to get it's length (yes I know it's 10)
+	local maxlen=$((128 - ${#trashname}))
+	trashname="${basename:0:$maxlen}"
+		# First create the .trashinfo, as per the _-Standard-_, as atomically as possible.
+		# Use process id as uniquifier: at some time another process might have had the
+		# same id, but no other running process on this computer does, so we can
+		# search for a unique name without fear of racing against another process.
+	local num=0
+	local maxnum=1000 # max. retries
+	while [ $num -lt $maxnum ] # just "true" should be enough, this feels safer
+	do
+		{	# with noclobber as set in trashAll(), > fails if target exists
+			# we encase command in {} to redirect errors to /dev/null outside it
+			cat <<-trashinfo > "$trashcanmeta/$trashname".trashinfo
+				[Trash Info]
+				Path=$pathval
+				DeletionDate=$(date +%FT%T)
+			trashinfo
+		} &> /dev/null && break
+			# no success; try to find a unique suffix, but first make sure
+			# that existence of .trashinfo name is the cause of failure
+		[ -e "$trashcanmeta/$trashname".trashinfo ] || {
+			>&2 echo "Could not write trashinfo data for \"$1\" in \"$trashcanmeta\""
+			return 3
+		}
+			# do increment the counter first, to avoid never reaching stop condition
+		while [[ $((++num)) -lt $maxnum && -e "$trashcanmeta/$trashname".trashinfo ]]
+		do
+			local suffix="~$$~$num"
+			trashname="${basename:0:(($maxlen - ${#suffix}))}$suffix"
+		done
+		[ $num -lt $maxnum ] ||
+		{		# desperate as we are now, we might also try to generate random
+				# names, but for now we don't
+			>&2 echo "Failed to generate a unique trash name for \"$1\" in \"$trashcanmeta\""
+			return 4
+		}
+	done
+		# on no success, we do not get here, so just go on
+	mv "$1" "$trashcandata/$trashname" ||
+	{		# clean up, signal, and return
+		rm "$trashcanmeta/$trashname".trashinfo
+		>&2 echo "Could not move \"$1\" to \"$trashcandata/$trashname\""
+		return 5
+	}
+	return 0
+}
+
+trashAll() {
+	# moves all arguments to their respective trash can, continuing with the
+	# others if one fails
+	# USAGE : trashAll file...
+	local retval=0
+		# use the noclobber shell attribute for creating a unique .trashinfo
+		# filename. $- is list of 'set' options; if noclobber is set,
+		# it contains a 'C'. An easy way to dectect that 'C' is to use variable
+		# expansion with pattern matching; a pattern "*C*" matches and is removed
+		# if and only if the variable contains a C, and removing it makes the
+		# variable empty. To distinguish this from a "$-" result that was empty
+		# to start with, we make sure shellAttrC initially is not empty by
+		# construction: it contains at least a '_'.
+	local shellAttrC="_$-"
+	shellAttrC="${shellAttrC##*C*}" # is now empty if 'C' was set
+	set -C	# -o noclobber
+	for arg in "$@"
+	do
+		moveTotrashcan "$arg" || retval=1
+	done
+		# restore noclobber option if needed : if 'C' was set, don't unset
+	[ -z "$shellAttrC" ] || set +C
+	return "$retval"
+}
+
+checkAll() {
+	# checks whether all arguments can be moved to a valid trash, halting if
+	# any one of them fails
+	# USAGE : checkAll file...
+	for arg in "$@"
+	do
+		[ -z "$arg" ] && {
+			>&2 echo "Cannot trash root \"/\""
+			return 2
+		}
+		findTrashcan "$arg" || return 1
+	done
+	return 0
+}
+
+clearBatrash() {
+	#clears the batrash memory, variables used to minimize disk access
+		# these variables are script constants
+	unset batrash_realhome batrash_uid batrash_resetextglob
+		# these variables are set for eacht script argument
+	unset batrash_realpath batrash_realmntpt
+	unset batrash_findtrashcan
+		# these variables are memory from one script argument to the next, to
+		# minimize disk access
+	unset batrash_mem_realdir batrash_mem_dirtrashcan
+	unset batrash_mem_mntpt batrash_mem_mnttrashcan
+	unset batrash_mem_homemntpt batrash_mem_hometrash
+}
+
+clearBatrash
+	# strip all terminating '/', like Gnome's "gio trash"/"gvfs-trash" and
+	# trash-cli's "trash-put" do (even for file arguments!!). The easiest method
+	# is with extglob ON.
+batrash_resetextglob=$(shopt -p extglob)	# -p : print syntax to set current state
+shopt -s extglob	# activate extended globbing patterns like +(/)
+	# home trash can has preference, so every arg to trash must be checked against $HOME
+	# NOTE : realpath removes superfluous '/', including terminating
+if batrash_realhome=$(realpath "$HOME") && batrash_uid=$(id -u) && checkAll "${@%%+(/)}"
+then
+	trashAll "${@%%+(/)}" || >&2 echo "Not all files trashed." 
+else
+	>&2 echo "Taking no action; create appropriate trash cans first."
+fi
+$batrash_resetextglob # reset, in case we forget this script should not be sourced
+clearBatrash
