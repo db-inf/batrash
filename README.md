@@ -51,26 +51,26 @@ Because of the importance of accidentaly deleted or trashed files, I would prefe
 
 However, for file arguments, I know of no other program that accepts a terminating '`/`', but both Gnome's `gio trash`-`gvfs-trash` and `trash-cli`'s `trash-put` do. `batrash` will not followe their behaviour, and is in good company :
 
-    $ ls .bashrc/
-    ls: cannot access '.bashrc/': Not a directory
-    $ stat .bashrc/
-    stat: cannot stat '.bashrc/': Not a directory
-    $ [ -e .bashrc/ ] && echo exists || echo exists NOT
-    exists NOT
     $ [ -e .bashrc ] && echo exists || echo exists NOT
     exists
     $ [ -f .bashrc ] && echo a file || echo NO file
     a file
+    $ [ -e .bashrc/ ] && echo exists || echo exists NOT
+    exists NOT
     $ [ -f .bashrc/ ] && echo a file || echo NO file
     NO file
     $ [ -d .bashrc/ ] && echo a directory || echo NO directory
     NO directory
+    $ ls .bashrc/
+    ls: cannot access '.bashrc/': Not a directory
+    $ stat .bashrc/
+    stat: cannot stat '.bashrc/': Not a directory
 
 ## trash cans
 A trash can is understood by `batrash` as either, in order of precedence
 
 1. The **home trash can** `$XDG_DATA_HOME/Trash`, if `$XDG_DATA_HOME` is set and not empty, and else `$HOME/.local/share/Trash`, where `$HOME` is the user's home directory, if the path to the trashed item and that _home trash can_ are on the same mount point. If a file with the name of this trash can exists, it must be a directory and it must be traversable (executable) and writable by the user, or trashing will fail.
-2. The **mount point trash can**, a directory `.Trash` in the top directory of the mount point whereunder the path to trashed item resides. If a file with the name of this trash can exists, it must be a real directory, not a symbolic link to one, it must have it's sticky bit set, and it must be traversable (executable) and writable by the user, or trashing will fail. In a _mount point trash can_, `batrash` creates a subdirectory `$userid` when it is not already present, where `$userid` is the user's id number, to serve as the user's compartment of the trash can. If a file with that name already exists, it must be a directory and it must be traversable (executable) and writable by the user, or it must already contain traversable (executable) and writable directories `files` and `info`, or trashing will fail. To support file systems that have no sticky bits, a _mount point trash can_ may also be validated by placing a file named ".stickybit" in it.
+2. The **mount point trash can**, a directory `.Trash` in the top directory of the mount point whereunder the path to trashed item resides. If a file with the name of this trash can exists, it must be a real directory, not a symbolic link to one, it must have it's sticky bit set, and it must be traversable (executable) and writable by the user, or trashing will fail. In a _mount point trash can_, `batrash` creates a subdirectory `$userid` when it is not already present, where `$userid` is the user's id number, to serve as a user compartment of the trash can. If a file with that name already exists, it must be a directory and it must be traversable (executable) and writable by the user, or it must already contain traversable (executable) and writable directories `files` and `info`, or trashing will fail. To support file systems that have no sticky bits, a _mount point trash can_ may also be validated by placing a file named ".stickybit" in it.
 3. A **personal mount point trash can**, a directory `.Trash-$userid` in the top directory of the mount point whereunder the path to the trashed item resides, where `$userid` is the user id number. If a file with the name of this trash can exists, it must be directory and it must be traversable (executable) and writable by the user, or trashing will fail.
 
 ## trashing

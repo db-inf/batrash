@@ -56,10 +56,11 @@ getRealmntpt() {
 	echo "${mntpt%/}"/
 }
 
-canWritedir() {
-	# checks if a path either does not exist (therefor cane be created valid
-	# in a writable parent), or is a valid (traversable, writable) directory
-	# USAGE : canWritedir directory && echo Can write || echo Cannot write
+isAvailableOrWritable() {
+	# checks if a path either does not exist (name available), therefor can be
+	# created valid in a writable parent), or is a valid (traversable, writable)
+	# directory.
+	# USAGE : isAvailableOrWritable directory && echo Can write || echo Cannot write
 	if [ -e "$1" ]
 	then
 		[[ -d "$1" && -x "$1" && -w "$1" ]] ||
@@ -133,8 +134,8 @@ findHometrash() {
 	then	# if home trash exists, it must be a directory and valid, else fail
 		if [[ -d "$hometrash" && -x "$hometrash" && -w "$hometrash" ]]
 		then	# valid trash can; if we cannot write to subdirs, report it and fail
-			{	canWritedir "$hometrash/files" &&
-				canWritedir "$hometrash/info"
+			{	isAvailableOrWritable "$hometrash/files" &&
+				isAvailableOrWritable "$hometrash/info"
 			} ||
 			{
 				>&2 echo "Can not write to directories files and/or info in trash can \"$hometrash\""
@@ -144,9 +145,9 @@ findHometrash() {
 			return 0
 		else	# trash can exists, but not valid: report it and fail
 			>&2 echo -n "Invalid trash can \"$hometrash\" for \"$1\" : "
-			[ -d "$hometrash"] || >&2 echo "not a directory."
-			[ -x "$hometrash"] || >&2 echo "not traversable."
-			[ -w "$hometrash"] || >&2 echo "not writable."
+			[ -d "$hometrash" ] || >&2 echo "not a directory."
+			[ -x "$hometrash" ] || >&2 echo "not traversable."
+			[ -w "$hometrash" ] || >&2 echo "not writable."
 			return 3
 		fi
 	else	# home trash can doesn't exist; remember that 
@@ -215,7 +216,7 @@ findTrashcan() {
 		batrash_findtrashcan="$batrash_mem_mnttrashcan"
 		return 0
 	fi
-		# try general trash can $topdir/.Trash
+		# try mount point trash can $topdir/.Trash
 	local trashcan="$batrash_realmntpt".Trash
 	if [ -e "$trashcan" ]
 	then
@@ -224,13 +225,24 @@ findTrashcan() {
 			( -k "$trashcan" ||   -f "$trashcan/.stickybit" ) ]]
 		then	# valid trash can; if we cannot write to subdirs, don't try
 				# next alternative, but report it and fail
-			{   canWritedir "$trashcan/$batrash_uid/files" &&
-				canWritedir "$trashcan/$batrash_uid/info"
+			[ ! -e "$trashcan/$batrash_uid" ] || # can create it OK: parent writable
+				# user dir exists, so isAvailableOrWritable reduces to "isWritable"
+			{
+				isAvailableOrWritable "$trashcan/$batrash_uid" &&
+				isAvailableOrWritable "$trashcan/$batrash_uid/files" &&
+				isAvailableOrWritable "$trashcan/$batrash_uid/info"
 			} ||
 			{
-				[[ ! -e "$trashcan/$batrash_uid/files" &&
-				   ! -e "$trashcan/$batrash_uid/info"  ]] &&
-				canWritedir "$trashcan/$batrash_uid"
+				! isAvailableOrWritable "$trashcan/$batrash_uid" &&
+					# if user dir not writable, subdirs must be and exist
+				{
+					[ -e "$trashcan/$batrash_uid/files" ] &&
+					isAvailableOrWritable "$trashcan/$batrash_uid/files"
+				} &&
+				{
+					[ -e "$trashcan/$batrash_uid/info" ] &&
+					isAvailableOrWritable "$trashcan/$batrash_uid/info"
+				}
 			} ||
 			{
 				>&2 echo "Can not write to directories \"files\" and/or \"info\" in trash can \"$trashcan/$batrash_uid\""
@@ -253,16 +265,16 @@ findTrashcan() {
 			return 4
 		fi
 	fi
-		# try user-specific trash can $topdir/.Trash-uid
-		# note that requirements for a single-user trash can are less stringent :
-		# may be a symlink, need not be sticky
+		# try personal mount point trash can $topdir/.Trash-uid
+		# note: requirements for personal mount point trash can are less
+		# stringent : may be a symlink, need not be sticky
 	trashcan="$batrash_realmntpt".Trash-"$batrash_uid"
 	if [ -e "$trashcan" ]
 	then
 		if [[ -d "$trashcan" && -x "$trashcan" && -w "$trashcan" ]]
 		then	# valid trash can; if we cannot write to subdirs, report it and fail
-			{	canWritedir "$trashcan/files" &&
-				canWritedir "$trashcan/info"
+			{	isAvailableOrWritable "$trashcan/files" &&
+				isAvailableOrWritable "$trashcan/info"
 			} ||
 			{
 				>&2 echo "Can not write to directories files and/or info in trash can \"$trashcan\""
@@ -277,9 +289,9 @@ findTrashcan() {
 			return 0
 		else	# trash can exists, but not valid: report it and fail
 			>&2 echo -n "Invalid trash can \"$trashcan\" for \"$1\" : "
-			[ -d "$trashcan"] || >&2 echo "not a directory."
-			[ -x "$trashcan"] || >&2 echo "not traversable."
-			[ -w "$trashcan"] || >&2 echo "not writable."
+			[ -d "$trashcan" ] || >&2 echo "not a directory."
+			[ -x "$trashcan" ] || >&2 echo "not traversable."
+			[ -w "$trashcan" ] || >&2 echo "not writable."
 			return 2
 		fi
 	fi
