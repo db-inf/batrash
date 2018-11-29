@@ -39,7 +39,11 @@ getRealmntpt() {
 	# USAGE: $(getMntPt file|directory)
 	# NOTE : $(getRealmntpt $(getRealmntpt $1)) = $(getRealmntpt $1)
 		# is not specified to be canonicalized, so we let realpath do that
-	local mntpt=$(stat --format %m "$1") || {
+	local mntpt
+		# TRICKY separate this from the previous line; 'local' has it's own
+		#	return value, which comes after, and thus overrides, the one
+		#	of the command substitution $()
+	mntpt=$(stat --format %m "$1") || {
 		>&2 echo "Cannot get mount point for \"$1\""
 		return 2
 	}
@@ -161,15 +165,22 @@ findTrashcan() {
 	# The result is stored in the variable batrash_findtrashcan; other
 	# batrash_ variables are set as well
 	# USAGE: findTrashcan file|directory
-	local realdir=$(getRealparent "$1") ||
-		return 10
+	# return values -lt 20 are about no or invalid trash can
+	# return values -gt 30 are about the argument
+	# NOTE: return values are to be coordinated with checkAll()
+	local realdir
+		# TRICKY separate this from the previous line; 'local' has it's own
+		#	return value, which comes after, and thus overrides, the one
+		#	of the command substitution $()
+	realdir=$(getRealparent "$1") ||
+		return 31
 		# don't even try trashing if file can't be removed from parent directory
 	[[ -d "$realdir" && -x "$realdir" && -w "$realdir" ]] || {
 		>&2 echo "\"$1\" can not be removed from it's parent \"$realdir\": no write access to directory."
 		[ -d "$realdir" ] || >&2 echo "not a directory."
 		[ -x "$realdir" ] || >&2 echo "not traversable."
 		[ -w "$realdir" ] || >&2 echo "not writable."
-		return 9
+		return 32
 	}
 	batrash_realpath="$realdir/${1##*/}"
 		# check previous OK'ed result, based on parent directory
@@ -181,7 +192,7 @@ findTrashcan() {
 		# bind-mount point, results of some "stat -c %m" are not consistent
 		# NOT LOCAL, we use batrash_realpath and batrash_realmntpt in xxx.trashinfo
 	batrash_realmntpt=$(getRealmntpt "$batrash_realpath") ||
-		return 8
+		return 33
 		# NOTE: only if path has the prefix, omitting that prefix has an effect
 	if [ "$batrash_realpath" != "${batrash_realpath#$batrash_realhome/}" ]
 	then	# argument is sub home path, check mountpoint too
@@ -272,17 +283,31 @@ findTrashcan() {
 			return 2
 		fi
 	fi
+	>&2 echo "No trash can found for \"$1\""
 	return 1	# no trash can found
 }
 
 moveTotrashcan() {
 	# USAGE : moveTotrashcan file
+	[ -e "$1" ] || {
+			# checkAll would halt on this, but now that we are effectively
+			# trashing, $1 may have been trashed for previous argument,
+			# via link, directory, or just double occurence
+		>&2 echo "\"$1\" does not exist anymore. Continuing."		
+		return 0
+	}
 	findTrashcan "$1" ||
 		return 1
 	local trashcan="$batrash_findtrashcan"
 	local trashcanmeta="$trashcan/info"
 	local trashcandata="$trashcan/files"
-	mkdir -p "$trashcanmeta" "$trashcandata" || {
+		# - Because we alreay checked that the trash can itself exists, the 1st
+		# directory is only created effectively when it is the user compartment
+		# of a global trashcan does not yet exist
+		# - Trash cans are named per user (/home/$USER/.local/share/Trash,
+		#   .Trash/$batrash_uid, .Trash-$batrash_uid) for a reason, so keep
+		#   them personal and set mode 0700
+	mkdir -pm=0700 "$trashcan" "$trashcanmeta" "$trashcandata" || {
 			>&2 echo "Could not create trash can directories  \"$trashcandata\" and  \"$trashcanmeta\" for \"$1\""
 			return 2
 	}	
@@ -373,44 +398,86 @@ checkAll() {
 	# checks whether all arguments can be moved to a valid trash, halting if
 	# any one of them fails
 	# USAGE : checkAll file...
+	# return values -lt 20 are about no or invalid trash can, others about the argument
+	# NOTE: return values are to be coordinated with findTrashcan()
 	for arg in "$@"
 	do
+		[ -e "$arg" ] || {
+			>&2 echo "Argument \"$arg\" does not exist."
+			return 21
+		}
+		arg="${arg%%+(/)}"
 		[ -z "$arg" ] && {
 			>&2 echo "Cannot trash root \"/\""
-			return 2
+			return 22
 		}
-		findTrashcan "$arg" || return 1
+			# return values are coordinated with those of findTrashcan,
+			# pass them on to caller
+		findTrashcan "$arg" || return $?
 	done
 	return 0
 }
 
 clearBatrash() {
 	#clears the batrash memory, variables used to minimize disk access
-		# these variables are script constants
+		# script constants
 	unset batrash_realhome batrash_uid batrash_resetextglob
-		# these variables are set for eacht script argument
+		# set for each script argument
 	unset batrash_realpath batrash_realmntpt
 	unset batrash_findtrashcan
-		# these variables are memory from one script argument to the next, to
+		# memory from one script argument to the next, to
 		# minimize disk access
 	unset batrash_mem_realdir batrash_mem_dirtrashcan
 	unset batrash_mem_mntpt batrash_mem_mnttrashcan
 	unset batrash_mem_homemntpt batrash_mem_hometrash
 }
 
-clearBatrash
-	# strip all terminating '/', like Gnome's "gio trash"/"gvfs-trash" and
-	# trash-cli's "trash-put" do (even for file arguments!!). The easiest method
-	# is with extglob ON.
-batrash_resetextglob=$(shopt -p extglob)	# -p : print syntax to set current state
-shopt -s extglob	# activate extended globbing patterns like +(/)
-	# home trash can has preference, so every arg to trash must be checked against $HOME
-	# NOTE : realpath removes superfluous '/', including terminating
-if batrash_realhome=$(realpath "$HOME") && batrash_uid=$(id -u) && checkAll "${@%%+(/)}"
-then
-	trashAll "${@%%+(/)}" || >&2 echo "Not all files trashed." 
-else
-	>&2 echo "Taking no action; create appropriate trash cans first."
-fi
-$batrash_resetextglob # reset, in case we forget this script should not be sourced
-clearBatrash
+	# NOTE : encapsulating batrash in a function makes it easy to break off
+	# with return instead of exit. Exit would end the shell if you source
+	# batrash from it.
+main() {
+	clearBatrash
+		# home trash can has preference, so every arg to trash must be checked
+		# against $HOME
+	batrash_realhome=$(realpath "$HOME") || {
+		>&2 echo "Cannot get the path to your home directory from the variable \"\$HOME\""
+		>&2 echo "Batrash really needs to know your home directory to do anything for you."
+		return 1
+	}
+		# all other trash cans need uid
+	batrash_uid=$(id -u) || {
+		>&2 echo "Cannot get your used id number from the command \"id\""
+		>&2 echo "Batrash really needs to know your user id number to do anything for you."
+		return 2
+	}
+		# The easiest method to strip all terminating '/', like Gnome's
+		# "gio trash"/"gvfs-trash" and trash-cli's "trash-put" do (even for
+		# file arguments!!), is with extglob ON. For checkAll() we do this per
+		# argument, in the function itself, so that we can first check that an
+		# argument with terminating '/' is not a file. Once those checks are done,
+		# we can strip the terminating '/' off all arguments at once for trashAll().
+		# NOTE : realpath removes terminating '/' too, and other superfluous '/',
+		# but as we don't pass last path components to it, because realpath also
+		# dereferences symlinks, we have to strip a terminating '/' explictely.
+	batrash_resetextglob=$(shopt -p extglob)	# -p : print syntax to set current state
+	shopt -s extglob	# activate extended globbing patterns like +(/)
+		# can use return value only once, so store $? in a variable for repeated use
+		# first this, so that return value of the 'local' command isn't mixed in
+	local check
+	checkAll "$@"
+	check=$?
+	if [ "$check" = 0 ]
+	then
+		trashAll "${@%%+(/)}" || >&2 echo "Not all files trashed." 
+	else
+		[ "$check" -lt 20 ] && {
+			>&2 echo "Taking no action; create appropriate trash cans first."
+		} || {
+			>&2 echo "Taking no action for any argument."
+		}
+	fi
+	$batrash_resetextglob # reset, in case we forget this script should not be sourced
+	clearBatrash
+}
+
+main "$@"

@@ -2,6 +2,9 @@
 
 Batrash implements trashing based on the [FreeDesktop.org Trash specification version 1.0]( https://specifications.freedesktop.org/trash-spec/trashspec-1.0.html), the _-Standard-_, with support for bind mounts.
 
+## importance of trashed files
+Indeed, batrash considers files in your trash can as important. Files that are deleted on purpose, probably are deemed unimportant. But a trash can is a recovery solution for accidentally deleted files, and accidentally deleted files can be very important. Therefor batrash will never delete them (unless you link a trash can in some way to `/dev/null`), and will check whether they can be moved to the trash can before doing so.
+
 ## alternatives to batrash
 
 ### [Gnome's gio](https://developer.gnome.org/gio/stable/gio.html)
@@ -34,11 +37,32 @@ In deviation from the _-Standard-_, batrash will not maintain a directory size c
 ### trashinfo `Path` key
 I disagree with, but do not deviate from, the _-Standard-_ on the point of the `Path` key of the `.trashinfo` file for the [_home trash can_](#trash-cans). It would clearly be more appropriate to store a path relative to the user's `$HOME` directory, for files that reside under that directory. Instead the _-Standard-_ requires a path relative to the `$XDG_DATA_HOME` directory, which defaults to `~/.local/share`, but forbids to use `..` path components. And exactly because these two requirements contradict one another, the _-Standard-_ has to make an exception to the rule that `Path` must be relative, and has to allow an absolute `Path` for the _home trash can_.
 
-## importance of trashed files
-Indeed, batrash considers files in your trash can as important. Files that are deleted on purpose, probably are deemed unimportant. But a trash can is a recovery solution for accidentally deleted files, and accidentally deleted files can be very important. Therefor batrash will never delete them (unless you link a trash can in some way to `/dev/null`), and will check whether they can be moved to the trash can before doing so.
+### arguments terminated by '`/`'
+The _-Standard-_ says nothing about it, but on this point batrash deviates from the behaviour of 2 widely used alternatieve implementations of trashing.
 
-### arguments terminated by '/'
-Because of the importance of accidentaly deleted or trashed files, I would prefer to simply reject directory arguments, and certainly file arguments, that are terminated by 1 or more '/'. This to avoid ambiguity like about the directory itself or it's contents, or to protect your data when you type in a filename when you intend to trash a directory. Rsync for instance handles source directories with or without terminating '/' differently too. But Gnome's "gio trash"/"gvfs-trash" and trash-cli's "trash-put", both widely used trash tools, just strip all terminating '/', even for file arguments. In this case, I think it is best not to deviate from their behaviour, and so to avoid confusion I wrote batrash to do the same.
+Because of the importance of accidentaly deleted or trashed files, I would prefer to simply reject directory arguments that are terminated by 1 or more '`/`'. This to avoid ambiguity like about the directory itself or it's contents, or to protect your data when you type in a filename when you intend to trash a directory. Rsync for instance handles source directories with or without terminating '`/`' differently too. But that is far from common. Most linux programs treat these references to a directory as equivalent : `dir`, `dir/`, `dir////`, so do Gnome's `gio trash`-`gvfs-trash` and `trash-cli`'s `trash-put`, and so will batrash.
+    $ [ -d .cache ] && echo a directory || echo NO directory
+    a directory
+    $ [ -d .cache/ ] && echo a directory || echo NO directory
+    a directory
+    $ [ -d .cache/// ] && echo a directory || echo NO directory
+    a directory
+
+However, for file arguments, I know of no other program that accepts a terminating '`/`', but both Gnome's `gio trash`-`gvfs-trash` and `trash-cli`'s `trash-put` do. Batrash will not followe their behaviour, and is in good company :
+    $ ls .bashrc/
+    ls: cannot access '.bashrc/': Not a directory
+    $ stat .bashrc/
+    stat: cannot stat '.bashrc/': Not a directory
+    $ [ -e .bashrc/ ] && echo exists || echo exists NOT
+    exists NOT
+    $ [ -e .bashrc ] && echo exists || echo exists NOT
+    exists
+    $ [ -f .bashrc ] && echo a file || echo NO file
+    a file
+    $ [ -f .bashrc/ ] && echo a file || echo NO file
+    NO file
+    $ [ -d .bashrc/ ] && echo a directory || echo NO directory
+    NO directory
 
 ## trash cans
 A trash can is understood by batrash as either, in order of precedence
@@ -48,7 +72,9 @@ A trash can is understood by batrash as either, in order of precedence
 3. A **personal mount point trash can**, a directory `.Trash-$userid` in the top directory of the mount point whereunder the path to the trashed item resides, where `$userid` is the user id number. If a file with the name of this trash can exists, it must be directory and it must be traversable (executable) and writable by the user, or trashing will fail.
 
 ## trashing
-If no appropriate trash can is found for every arguments to batrash, or if any of these arguments can not be removed from it's parent directory because that is not writable, then no action is taken for all the other arguments either. If any change in this condition has taken place while effectively trashing arguments to batrash, trashing is performed for all arguments that are not affected by it.
+If no appropriate trash can is found for every arguments to batrash, or if any of these arguments can not be removed from it's parent directory because that is not writable, then no action is taken for all the other arguments either.
+
+If any change in this condition has taken place in the time between checking it, and effectively trashing arguments to batrash, trashing is performed for all arguments that are not affected by it.
 
 Trashing is done by a `mv` command to the trash can, or to the `./$userid` compartment of a [_mount point trash can_](#trash-cans). If the trash can is located in the same file system as the file, which is so intended with the [_trash cans_](#trash-cans) as described above, this should not involve writing a copy of the item to trash, only relocating it's directory entry from it's current parent to the trash can's `files` directory and writing an index into it's `info` directory. However we do not impose more restrictions on the nature of trash can directories, than those imposed by the _-Standard-_; in particular, if e.g. a `files` directory in a trash can is a symbolic link to some place on another file system, moving a trashed file to it WILL involve writing a full copy of the trashed file.
 
