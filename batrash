@@ -61,7 +61,8 @@ isAvailableOrWritable() {
 	# created valid in a writable parent), or is a valid (traversable, writable)
 	# directory.
 	# USAGE : isAvailableOrWritable directory && echo Can write || echo Cannot write
-	if [ -e "$1" ]
+		# NOTE '-e' is false for existing but broken symbolic link
+	if [[ -e "$1" || -L "$1" ]]
 	then
 		[[ -d "$1" && -x "$1" && -w "$1" ]] ||
 			return 1
@@ -130,7 +131,8 @@ findHometrash() {
 	[ -n "$XDG_DATA_HOME" ] &&
 		hometrash="$XDG_DATA_HOME"/Trash ||
 		hometrash="$HOME/.local/share"/Trash
-	if [ -e "$hometrash" ]
+		# NOTE '-e' is false for existing but broken symbolic link
+	if [[ -e "$hometrash" || -L "$hometrash" ]]
 	then	# if home trash exists, it must be a directory and valid, else fail
 		if [[ -d "$hometrash" && -x "$hometrash" && -w "$hometrash" ]]
 		then	# valid trash can; if we cannot write to subdirs, report it and fail
@@ -218,6 +220,7 @@ findTrashcan() {
 	fi
 		# try mount point trash can $topdir/.Trash
 	local trashcan="$batrash_realmntpt".Trash
+		# NOTE '-e' is false for existing but broken symbolic link, but link is not allowed anyway
 	if [ -e "$trashcan" ]
 	then
 		if [[ -d "$trashcan" &&   -x "$trashcan" &&
@@ -225,7 +228,8 @@ findTrashcan() {
 			( -k "$trashcan" ||   -f "$trashcan/.stickybit" ) ]]
 		then	# valid trash can; if we cannot write to subdirs, don't try
 				# next alternative, but report it and fail
-			[ ! -e "$trashcan/$batrash_uid" ] || # can create it OK: parent writable
+				# NOTE '-e' is false for existing but broken symbolic link		
+			[[ ! -e "$trashcan/$batrash_uid" && ! -L "$trashcan/$batrash_uid" ]] || # can create it OK: parent writable
 				# user dir exists, so isAvailableOrWritable reduces to "isWritable"
 			{
 				isAvailableOrWritable "$trashcan/$batrash_uid" &&
@@ -236,11 +240,11 @@ findTrashcan() {
 				! isAvailableOrWritable "$trashcan/$batrash_uid" &&
 					# if user dir not writable, subdirs must be and exist
 				{
-					[ -e "$trashcan/$batrash_uid/files" ] &&
+					[[ -e "$trashcan/$batrash_uid/files" || -L "$trashcan/$batrash_uid/files" ]] &&
 					isAvailableOrWritable "$trashcan/$batrash_uid/files"
 				} &&
 				{
-					[ -e "$trashcan/$batrash_uid/info" ] &&
+					[[ -e "$trashcan/$batrash_uid/info" ||  -L "$trashcan/$batrash_uid/info" ]] &&
 					isAvailableOrWritable "$trashcan/$batrash_uid/info"
 				}
 			} ||
@@ -269,7 +273,8 @@ findTrashcan() {
 		# note: requirements for personal mount point trash can are less
 		# stringent : may be a symlink, need not be sticky
 	trashcan="$batrash_realmntpt".Trash-"$batrash_uid"
-	if [ -e "$trashcan" ]
+		# NOTE '-e' is false for existing but broken symbolic link
+	if [[ -e "$trashcan" ||  -L "$trashcan" ]]
 	then
 		if [[ -d "$trashcan" && -x "$trashcan" && -w "$trashcan" ]]
 		then	# valid trash can; if we cannot write to subdirs, report it and fail
@@ -301,7 +306,8 @@ findTrashcan() {
 
 moveTotrashcan() {
 	# USAGE : moveTotrashcan file
-	[ -e "$1" ] || {
+	# NOTE '-e' is false for existing but broken symbolic link
+	[[ -e "$1" ||  -L "$1" ]] || {
 			# checkAll would halt on this, but now that we are effectively
 			# trashing, $1 may have been trashed for previous argument,
 			# via link, directory, or just double occurence
@@ -354,12 +360,14 @@ moveTotrashcan() {
 		} &> /dev/null && break
 			# no success; try to find a unique suffix, but first make sure
 			# that existence of .trashinfo name is the cause of failure
-		[ -e "$trashcanmeta/$trashname".trashinfo ] || {
+			# NOTE '-e' is false for existing but broken symbolic link
+		[[ -e "$trashcanmeta/$trashname".trashinfo || -L "$trashcanmeta/$trashname".trashinfo ]] || {
 			>&2 echo "Could not write trashinfo data for \"$1\" in \"$trashcanmeta\""
 			return 3
 		}
 			# do increment the counter first, to avoid never reaching stop condition
-		while [[ $((++num)) -lt $maxnum && -e "$trashcanmeta/$trashname".trashinfo ]]
+			# NOTE '-e' is false for existing but broken symbolic link
+		while [[ $((++num)) -lt $maxnum && ( -e "$trashcanmeta/$trashname".trashinfo || -L "$trashcanmeta/$trashname".trashinfo ) ]]
 		do
 			local suffix="~$$~$num"
 			trashname="${basename:0:(($maxlen - ${#suffix}))}$suffix"
@@ -413,8 +421,8 @@ checkAll() {
 	# return values -lt 20 are about no or invalid trash can, others about the argument
 	# NOTE: return values are to be coordinated with findTrashcan()
 	for arg in "$@"
-	do
-		[ -e "$arg" ] || {
+	do	# NOTE '-e' is false for existing but broken symbolic link
+		[[ -e "$arg" ||  -L "$arg" ]] || {
 			>&2 echo "Argument \"$arg\" does not exist."
 			return 21
 		}
