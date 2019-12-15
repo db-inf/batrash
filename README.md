@@ -19,13 +19,10 @@
 - [extra's : spacefm plugins for batrash](#spacefm)
 
 ## importance of trashed files<a name="importance"/>
-
 Indeed, `batrash` considers files in your trash can as important. Files that are deleted on purpose, probably are deemed unimportant. But a trash can is a recovery solution for accidentally deleted files, and accidentally deleted files can be very important. Therefor `batrash` will never delete them (unless you link a trash can in some way to `/dev/null`), and will check whether they can be moved to the trash can before doing so.
 
 ## alternatives to `batrash`<a name="alternatives"/>
-
-<a name="Gnome"/>
-### [Gnome's gio trash](https://developer.gnome.org/gio/stable/gio.html)
+### [Gnome's gio trash](https://developer.gnome.org/gio/stable/gio.html)<a name="Gnome"/>
 At least the v2.56.2 implementation of trash in Gnome's `gio trash` (formerly `gvfs-trash`) is confused by bind mounts, and prevents trashing on such mounts. Apparently `gio trash` first looks for a trash can in the file system's root, and then unjustly diagnoses that moving the file or directory from the bind mountpoint to the file system mount point is a move to a different file system : _"Unable to delete file ... across filesystem boundaries"_.
 
 <a name="trash-cli"/>
