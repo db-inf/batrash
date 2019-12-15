@@ -18,14 +18,11 @@
 - [trashing](#trashing)
 - [extra's : spacefm plugins for batrash](#spacefm)
 
-<a name="importance"/>
-
-## importance of trashed files
+## importance of trashed files<a name="importance"/>
 
 Indeed, `batrash` considers files in your trash can as important. Files that are deleted on purpose, probably are deemed unimportant. But a trash can is a recovery solution for accidentally deleted files, and accidentally deleted files can be very important. Therefor `batrash` will never delete them (unless you link a trash can in some way to `/dev/null`), and will check whether they can be moved to the trash can before doing so.
 
-<a name="alternatives"/>
-## alternatives to `batrash`
+## alternatives to `batrash`<a name="alternatives"/>
 
 <a name="Gnome"/>
 ### [Gnome's gio trash](https://developer.gnome.org/gio/stable/gio.html)
