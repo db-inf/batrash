@@ -75,46 +75,62 @@ urlencode() {
     # USAGE: $(urlencode string)
     # TODO for real url encoding for web purposes, this function might fail,
     # because it escapes the '!' character, that has meaning in some urls.
-    local string="$1"
-    local len="${#string}"
-    for (( offs = 0; offs < len; offs++ )); do
-        local c="${string:offs:1}"
-        case "$c" in
+    ( 	# use subshell with byte-per-byte character encoding, otherwise printf "%X" "'$c"
+		# would print the unicode code-point, a 16-bit integer
+		export LANG=C
+		local c
+		echo -n "$1" | while read -r -N 1 c
+		do
+			case "$c" in
+					# RFC 2396 2.2. Reserved Characters:
+					# If the data for a URI component would conflict with
+					# the reserved purpose, then the conflicting data must be escaped
+					# before forming the URI.
+					#   reserved  = ";" | "/" | "?" | ":" | "@" | "&" | "=" | "+" | "$" | ","
+					# NOTE : As our purpose, file name encoding, does not have the kind
+					# of conflicts that internet URLs do, we just never escape them
+				( [\;/?:@\&=+\$,] )
+					printf "$c"
+					;;
+					# RFC 2396 2.3. Unreserved Characters:
+					# Data must be escaped if it does not have
+					# a representation using an unreserved character
+					# 	unreserved = alphanum | mark
+					#	mark = "-" | "_" | "." | "!" | "~" | "*" | "'" | "(" | ")"
+					# NOTE : exclude "!" from this list; it's meaning as history
+					#	command in bash tends to mesh things up
+				( [0-9A-Za-z\)\(\'*~._-] )
+					printf "$c"
+					;;
+					# RFC 2396 2.4.3. Excluded US-ASCII Characters:
+					# Although they are disallowed within the URI syntax [but not for
+					# filenames], we include here a  description of those US-ASCII
+					# characters that have been excluded [OMITTED: and the reasons for their
+					# exclusion.]
+					# 	control     = <US-ASCII coded characters 00-1F and 7F hexadecimal>
+					#	space       = <US-ASCII coded character 20 hexadecimal>
+					#	delims      = "<" | ">" | "#" | "%" | <">
+					#	unwise      = "{" | "}" | "|" | "\" | "^" | "[" | "]" | "`"
+					# Data corresponding to excluded characters must be escaped in order to
+					# be properly represented within a URI
+				( * )
+					# RFC 2396 2.4. Escape Sequences
+					# Data must be escaped if it does not have a representation using an
+					# unreserved character; this includes data that does not correspond to
+					# a printable character of the US-ASCII coded character set, or that
+					# corresponds to any US-ASCII character that is disallowed, as
+					# explained (below) [above].
 
-				# RFC 2396 : If the data for a URI component would conflict with
-				# the reserved purpose, then the conflicting data must be escaped
-				# before forming the URI.
-				#   reserved  = ";" | "/" | "?" | ":" | "@" | "&" | "=" | "+" | "$" | ","
-				# NOTE : As our purpose, file name encoding, does not know the kind
-				# of conflicts that internet URLs do, we just never escape them
-			( [\;/?:@\&=+\$,] )
-				printf "$c"
-				;;
-				# RFC 2396 : Data must be escaped if it does not have
-				#	a representation using an unreserved character
-				#	unreserved = alphanum | mark
-				#	mark = "-" | "_" | "." | "!" | "~" | "*" | "'" | "(" | ")"
-				# NOTE : exclude "!" from this list; it's meaning as history
-				#	command in bash tends to mesh things up
-            ( [0-9A-Za-z\)\(\'*~._-] )
-				printf "$c"
-				;;
-            ( * )
-					# "'$c" : if the leading character of arg is a single or
-					# double quote, the value is the ASCII value of the
-					# following character.
-				printf '%%%02X' "'$c"
-				;;
-        esac
-    done
+					# bash builtin printf : if the leading character is a single or double
+					# quote, the value is the ASCII value of the following character.
+					# NOTE: not the ASCII value, but the unicode code-point, a 16-bit integer,
+					# for multibyte LANG
+					printf "%%%2.2X" "'$c"
+					;;
+			esac
+		done
+    )
 }
-
-#	urldecode() {
-#	    # USAGE : urldecode string
-#		# TODO : is string containing a backslash a problem?
-#	    local url_encoded="${1//+/ }"
-#	    printf '%b' "${url_encoded//%/\\x}"
-#	}
 
 findHometrash() {
 	# Sets the variable batrash_mem_hometrash to the path of the valid and existing
@@ -152,7 +168,7 @@ findHometrash() {
 			[ -w "$hometrash" ] || >&2 echo "not writable."
 			return 3
 		fi
-	else	# home trash can doesn't exist; remember that 
+	else	# home trash can doesn't exist; remember that
 		batrash_mem_hometrash=
 			# no error message; spec says to create a hometrash, we won't:
 			# instead we look for a fallback trashcan at $topdir
@@ -220,15 +236,16 @@ findTrashcan() {
 	fi
 		# try mount point trash can $topdir/.Trash
 	local trashcan="$batrash_realmntpt".Trash
-		# NOTE '-e' is false for existing but broken symbolic link, but link is not allowed anyway
-	if [ -e "$trashcan" ]
+		# NOTE '-e' is false for existing but broken symbolic link;
+		# link is not allowed, but must lead to error
+	if [[ -e "$trashcan" || -L "$trashcan" ]]
 	then
 		if [[ -d "$trashcan" &&   -x "$trashcan" &&
 			  -w "$trashcan" && ! -L "$trashcan" &&
 			( -k "$trashcan" ||   -f "$trashcan/.stickybit" ) ]]
 		then	# valid trash can; if we cannot write to subdirs, don't try
 				# next alternative, but report it and fail
-				# NOTE '-e' is false for existing but broken symbolic link		
+				# NOTE '-e' is false for existing but broken symbolic link
 			[[ ! -e "$trashcan/$batrash_uid" && ! -L "$trashcan/$batrash_uid" ]] || # can create it OK: parent writable
 				# user dir exists, so isAvailableOrWritable reduces to "isWritable"
 			{
@@ -274,7 +291,7 @@ findTrashcan() {
 		# stringent : may be a symlink, need not be sticky
 	trashcan="$batrash_realmntpt".Trash-"$batrash_uid"
 		# NOTE '-e' is false for existing but broken symbolic link
-	if [[ -e "$trashcan" ||  -L "$trashcan" ]]
+	if [[ -e "$trashcan" || -L "$trashcan" ]]
 	then
 		if [[ -d "$trashcan" && -x "$trashcan" && -w "$trashcan" ]]
 		then	# valid trash can; if we cannot write to subdirs, report it and fail
@@ -306,12 +323,12 @@ findTrashcan() {
 
 moveTotrashcan() {
 	# USAGE : moveTotrashcan file
-	# NOTE '-e' is false for existing but broken symbolic link
-	[[ -e "$1" ||  -L "$1" ]] || {
+		# NOTE '-e' is false for existing but broken symbolic link
+	[[ -e "$1" || -L "$1" ]] || {
 			# checkAll would halt on this, but now that we are effectively
 			# trashing, $1 may have been trashed for previous argument,
 			# via link, directory, or just double occurence
-		>&2 echo "\"$1\" does not exist anymore. Continuing."		
+		>&2 echo "\"$1\" does not exist anymore. Continuing."
 		return 0
 	}
 	findTrashcan "$1" ||
@@ -328,7 +345,7 @@ moveTotrashcan() {
 	mkdir -pm=0700 "$trashcan" "$trashcanmeta" "$trashcandata" || {
 			>&2 echo "Could not create trash can directories  \"$trashcandata\" and  \"$trashcanmeta\" for \"$1\""
 			return 2
-	}	
+	}
 		# value of the Path= key in .trashinfo, which is relative to the directory
 		# where the trash can is located. For the home trash can this is
 		# "~/.local/share" : don't bother trying to remove that as a prefix,
@@ -422,7 +439,7 @@ checkAll() {
 	# NOTE: return values are to be coordinated with findTrashcan()
 	for arg in "$@"
 	do	# NOTE '-e' is false for existing but broken symbolic link
-		[[ -e "$arg" ||  -L "$arg" ]] || {
+		[[ -e "$arg" || -L "$arg" ]] || {
 			>&2 echo "Argument \"$arg\" does not exist."
 			return 21
 		}
@@ -488,7 +505,7 @@ main() {
 	check=$?
 	if [ "$check" = 0 ]
 	then
-		trashAll "${@%%+(/)}" || >&2 echo "Not all files trashed." 
+		trashAll "${@%%+(/)}" || >&2 echo "Not all files trashed."
 	else
 		[ "$check" -lt 20 ] && {
 			>&2 echo "Taking no action; create appropriate trash cans first."
