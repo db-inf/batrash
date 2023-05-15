@@ -73,8 +73,10 @@ isAvailableOrWritable() {
 urlencode() {
 	# url-encodes a string parameter to stdout
     # USAGE: $(urlencode string)
-    # TODO for real url encoding for web purposes, this function might fail,
+    # REMARK: for real url encoding for web purposes, this function might fail,
     # because it escapes the '!' character, that has meaning in some urls.
+    ## quickie : check if string contains only chars that do not need escaping
+    [ "${1//[0-9A-Za-z\)\!\(\'*~._\;\/?:@\&=+\$,-]}" = "" ] && echo -n "$1" && return
     ( 	# use subshell with byte-per-byte character encoding, otherwise printf "%X" "'$c"
 		# would print the unicode code-point, a 16-bit integer
 		export LANG=C
@@ -89,7 +91,7 @@ urlencode() {
 					#   reserved  = ";" | "/" | "?" | ":" | "@" | "&" | "=" | "+" | "$" | ","
 					# NOTE : As our purpose, file name encoding, does not have the kind
 					# of conflicts that internet URLs do, we just never escape them
-				( [\;/?:@\&=+\$,] )
+				( [\;\/?:@\&=+\$,] )
 					printf "$c"
 					;;
 					# RFC 2396 2.3. Unreserved Characters:
@@ -97,9 +99,7 @@ urlencode() {
 					# a representation using an unreserved character
 					# 	unreserved = alphanum | mark
 					#	mark = "-" | "_" | "." | "!" | "~" | "*" | "'" | "(" | ")"
-					# NOTE : exclude "!" from this list; it's meaning as history
-					#	command in bash tends to mesh things up
-				( [0-9A-Za-z\)\(\'*~._-] )
+				( [0-9A-Za-z\)\(\'*~\!._-] )
 					printf "$c"
 					;;
 					# RFC 2396 2.4.3. Excluded US-ASCII Characters:
